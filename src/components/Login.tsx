@@ -102,7 +102,7 @@ export function Login() {
                         onClick={() => setIsSignUp(!isSignUp)}
                         className="text-gray-400 hover:text-indigo-400 text-sm transition-colors"
                     >
-                        {/*isSignUp ? '¿Ya tienes cuenta? Inicia sesión' : '¿No tienes cuenta? Regístrate'*/}
+                        {isSignUp ? '¿Ya tienes cuenta? Inicia sesión' : '¿No tienes cuenta? Regístrate'}
                     </button>
                 </div>
             </div>

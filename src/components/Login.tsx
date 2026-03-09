@@ -57,7 +57,7 @@ export function Login() {
                             value={email}
                             onChange={(e) => setEmail(e.target.value)}
                             className="w-full pl-10 pr-4 py-2 bg-gray-700 text-white border border-gray-600 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 placeholder-gray-500 transition-colors"
-                            placeholder="nombre@ejemplo.com"
+                            placeholder="Ingrese su Correo Electronico"
                             required
                         />
                     </div>
@@ -73,7 +73,7 @@ export function Login() {
                             value={password}
                             onChange={(e) => setPassword(e.target.value)}
                             className="w-full pl-10 pr-4 py-2 bg-gray-700 text-white border border-gray-600 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 placeholder-gray-500 transition-colors"
-                            placeholder="••••••••"
+                            placeholder="Ingrese su Contraseña"
                             required
                         />
                     </div>
@@ -102,7 +102,7 @@ export function Login() {
                         onClick={() => setIsSignUp(!isSignUp)}
                         className="text-gray-400 hover:text-indigo-400 text-sm transition-colors"
                     >
-                        {isSignUp ? '¿Ya tienes cuenta? Inicia sesión' : '¿No tienes cuenta? Regístrate'}
+                        {/*isSignUp ? '¿Ya tienes cuenta? Inicia sesión' : '¿No tienes cuenta? Regístrate'*/}
                     </button>
                 </div>
             </div>

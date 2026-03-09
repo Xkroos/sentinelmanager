@@ -1,619 +1,310 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
-import { Package, Plus, Edit3, Trash2, DollarSign, TrendingUp, XCircle, CheckCircle, Search } from 'lucide-react'; 
+import { 
+    Package, Plus, Edit3, Trash2, DollarSign, 
+    TrendingUp, XCircle, CheckCircle, Search, ShoppingCart, Truck 
+} from 'lucide-react'; 
 
-// Definiciones de tipos basadas en tu esquema de Supabase
+// --- DEFINICIÓN DE TIPOS ---
 interface InventoryItem {
     id: string;
     user_id: string;
     created_at: string;
     name: string;
-    sku?: string | null;
+    sku: string | null;
+    supplier: string | null;
+    stock_quantity: number; // Ajustado a tu estructura
     unit_price: number; 
     sale_price: number; 
-    stock_quantity: number;
 }
+
 interface Payment {
     id: string;
     amount: number;
-    // ... otros campos de Payment
 }
-interface Order {
+
+interface OrderWithPayments {
     id: string;
     user_id: string;
     order_date: string;
-    sale_price: number; // Precio total de la orden
-    // Nota: El campo 'purchase_price' existe en la tabla, pero para el cálculo de ventas solo necesitamos 'sale_price' aquí.
-}
-interface OrderWithPayments extends Order {
+    sale_price: number;
     payments: Payment[];
 }
 
-
 export function InventoryModule() {
     const { user } = useAuth();
+    
+    // Estados de datos
     const [items, setItems] = useState<InventoryItem[]>([]);
     const [orders, setOrders] = useState<OrderWithPayments[]>([]); 
     const [loading, setLoading] = useState(true);
 
-    // --- ESTADO DE BÚSQUEDA ---
+    // Estados de interfaz (Búsqueda y Venta)
     const [searchTerm, setSearchTerm] = useState('');
-    // -------------------------
+    const [selectedItemId, setSelectedItemId] = useState('');
+    const [saleQuantity, setSaleQuantity] = useState(1);
+    const [isProcessingSale, setIsProcessingSale] = useState(false);
 
-    // Estados para el formulario de nuevo artículo
-    const [newItemName, setNewItemName] = useState('');
-    const [newItemPurchasePrice, setNewItemPurchasePrice] = useState(0);  
-    const [newItemSalePrice, setNewItemSalePrice] = useState(0);      
-    const [newItemQuantity, setNewItemQuantity] = useState(0);
-    const [newItemSku, setNewItemSku] = useState('');
+    // Estados de Formulario (Nuevo Item)
+    const [formData, setFormData] = useState({
+        name: '',
+        sku: '',
+        supplier: '',
+        stock_quantity: 0,
+        unit_price: 0,
+        sale_price: 0
+    });
 
-    // Estado para manejar qué ítem se está editando
     const [editingItem, setEditingItem] = useState<InventoryItem | null>(null);
 
-
     // --------------------------------------------------
-    // 🚀 LÓGICA DE CARGA DE DATOS
+    // 🚀 CARGA DE DATOS
     // --------------------------------------------------
-
-    const getTotalPaid = (payments: Payment[]) => {
-        // Aseguramos que el monto sea tratado como número flotante
-        return payments.reduce((sum, payment) => sum + parseFloat(payment.amount.toString()), 0);
-    };
-
-    const loadInventory = useCallback(async () => {
+    const loadData = useCallback(async () => {
         if (!user) return;
         setLoading(true);
         
-        const { data, error } = await supabase
-            .from('inventory_items')
-            .select('*')
-            .eq('user_id', user.id)
-            .order('name', { ascending: true });
+        const [invRes, orderRes] = await Promise.all([
+            supabase.from('inventory_items').select('*').eq('user_id', user.id).order('name'),
+            supabase.from('orders').select('*, payments(*)').eq('user_id', user.id).order('order_date', { ascending: false })
+        ]);
 
-        if (error) {
-            console.error('Error cargando el inventario:', error);
-        } else {
-            setItems(data as InventoryItem[]); 
-        }
+        if (invRes.data) setItems(invRes.data as InventoryItem[]);
+        if (orderRes.data) setOrders(orderRes.data as OrderWithPayments[]);
+        
         setLoading(false);
     }, [user]);
 
-    const loadOrders = useCallback(async () => {
-        if (!user) return;
-
-        const { data: ordersData } = await supabase
-            .from('orders')
-            .select('*, payments(*)') 
-            .eq('user_id', user.id)
-            .order('order_date', { ascending: false });
-
-        if (ordersData) {
-            setOrders(ordersData as OrderWithPayments[]);
-        }
-    }, [user]);
-
-    useEffect(() => {
-        loadInventory();
-        loadOrders();
-    }, [loadInventory, loadOrders]);
-
+    useEffect(() => { loadData(); }, [loadData]);
 
     // --------------------------------------------------
-    // 🧠 LÓGICA DE FILTRADO Y CÁLCULOS
+    // 🛒 LÓGICA DE VENTA (RPC)
     // --------------------------------------------------
-
-    const filteredItems = useMemo(() => {
-        if (!searchTerm) {
-            return items;
+    const handleQuickSale = async () => {
+        const item = items.find(i => i.id === selectedItemId);
+        if (!user || !item || saleQuantity <= 0 || saleQuantity > item.stock_quantity) {
+            alert("Verifique la cantidad o el stock disponible.");
+            return;
         }
 
-        const lowerCaseSearchTerm = searchTerm.toLowerCase();
-
-        return items.filter(item => {
-            const nameMatch = item.name.toLowerCase().includes(lowerCaseSearchTerm);
-            const skuMatch = item.sku?.toLowerCase().includes(lowerCaseSearchTerm);
-
-            return nameMatch || skuMatch;
+        setIsProcessingSale(true);
+        const { error } = await supabase.rpc('handle_quick_sale', {
+            p_user_id: user.id,
+            p_item_id: item.id,
+            p_quantity: saleQuantity,
+            p_sale_price: item.sale_price
         });
+
+        if (error) {
+            alert('Error: ' + error.message);
+        } else {
+            await loadData(); // Recarga todo para actualizar KPIs y tablas
+            setSelectedItemId('');
+            setSaleQuantity(1);
+        }
+        setIsProcessingSale(false);
+    };
+
+    // --------------------------------------------------
+    // 🧠 CÁLCULOS Y FILTROS
+    // --------------------------------------------------
+    const filteredItems = useMemo(() => {
+        return items.filter(i => 
+            i.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            i.sku?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            i.supplier?.toLowerCase().includes(searchTerm.toLowerCase())
+        );
     }, [items, searchTerm]);
 
+    const stats = useMemo(() => {
+        const inv = items.reduce((acc, i) => ({
+            cost: acc.cost + (i.stock_quantity * i.unit_price),
+            profit: acc.profit + (i.stock_quantity * (i.sale_price - i.unit_price))
+        }), { cost: 0, profit: 0 });
 
-    const inventorySummary = useMemo(() => {
-        return items.reduce((acc, item) => {
-            const quantity = item.stock_quantity;
-            const purchasePrice = parseFloat(item.unit_price.toString());
-            const salePrice = parseFloat(item.sale_price.toString());
-
+        const sales = orders.reduce((acc, o) => {
+            const paid = o.payments?.reduce((s, p) => s + Number(p.amount), 0) || 0;
             return {
-                totalInvestment: acc.totalInvestment + (quantity * purchasePrice),
-                totalPotentialRevenue: acc.totalPotentialRevenue + (quantity * salePrice),
+                collected: acc.collected + paid,
+                pending: acc.pending + (Number(o.sale_price) - paid)
             };
-        }, { totalInvestment: 0, totalPotentialRevenue: 0 });
-    }, [items]);
+        }, { collected: 0, pending: 0 });
 
-    const totalPotentialProfit = inventorySummary.totalPotentialRevenue - inventorySummary.totalInvestment;
-
-    const salesSummary = useMemo(() => {
-        return orders.reduce((acc, order) => {
-            const revenue = parseFloat(order.sale_price.toString());
-            const totalPaid = getTotalPaid(order.payments);
-            const remaining = revenue - totalPaid;
-
-            return {
-                totalCollected: acc.totalCollected + totalPaid,
-                totalPending: acc.totalPending + remaining,
-                totalSalesRevenue: acc.totalSalesRevenue + revenue,
-            };
-        }, { totalCollected: 0, totalPending: 0, totalSalesRevenue: 0 });
-    }, [orders]);
-
+        return { ...inv, ...sales };
+    }, [items, orders]);
 
     // --------------------------------------------------
-    // ✅ FUNCIONES DE ACCIÓN (CRUD)
+    // ✅ ACCIONES CRUD
     // --------------------------------------------------
-
-    const resetNewItemForm = () => {
-        setNewItemName('');
-        setNewItemPurchasePrice(0);
-        setNewItemSalePrice(0);
-        setNewItemQuantity(0);
-        setNewItemSku('');
-    };
-    
-    // **FUNCIÓN: AGREGAR ARTÍCULO**
     const handleAddItem = async () => {
-        if (!user || !newItemName.trim() || newItemQuantity <= 0 || newItemPurchasePrice <= 0 || newItemSalePrice <= 0) {
-            alert('Por favor, completa todos los campos obligatorios (Nombre, Stock, Costo y Precio de Venta).');
-            return;
-        }
+        if (!user || !formData.name) return;
+        const { error } = await supabase.from('inventory_items').insert([{
+            ...formData,
+            user_id: user.id
+        }]);
 
-        setLoading(true);
-
-        const newItemData = {
-            user_id: user.id,
-            name: newItemName,
-            sku: newItemSku.trim() || null,
-            unit_price: newItemPurchasePrice,
-            sale_price: newItemSalePrice,
-            stock_quantity: newItemQuantity,
-        };
-
-        const { data: insertedItem, error } = await supabase
-            .from('inventory_items')
-            .insert([newItemData])
-            .select()
-            .single();
-
-        if (error) {
-            console.error('Error al guardar el artículo:', error);
-            alert(`Error al guardar: ${error.message}`);
-        } else {
-            setItems(prevItems => [...prevItems, insertedItem as InventoryItem]);
-            resetNewItemForm();
-        }
-
-        setLoading(false);
-    };
-
-    const startEditing = (item: InventoryItem) => {
-        setEditingItem(item);
-    };
-
-    const cancelEditing = () => {
-        setEditingItem(null);
-    };
-
-    const handleEditChange = (field: keyof InventoryItem, value: string | number) => {
-        if (editingItem) {
-            let parsedValue: string | number;
-            
-            // Conversión a número para campos numéricos
-            if (['unit_price', 'sale_price', 'stock_quantity'].includes(field as string)) {
-                parsedValue = typeof value === 'string' && value === '' ? 0 : parseFloat(value as string) || 0;
-            } else {
-                parsedValue = value;
-            }
-
-            setEditingItem({
-                ...editingItem,
-                [field]: parsedValue,
-            });
+        if (!error) {
+            setFormData({ name: '', sku: '', supplier: '', stock_quantity: 0, unit_price: 0, sale_price: 0 });
+            loadData();
         }
     };
 
-    // **FUNCIÓN: ACTUALIZAR ARTÍCULO**
-    const handleUpdateItem = async () => {
-        if (!editingItem || !editingItem.id || !user) return;
-        
-        // Validación rápida de campos
-        if (!editingItem.name.trim() || editingItem.unit_price <= 0 || editingItem.sale_price <= 0) {
-            alert('Los campos Nombre, Costo de Compra y Precio de Venta no pueden estar vacíos o ser cero.');
-            return;
-        }
-
-        setLoading(true);
-
-        const updateData = {
-            name: editingItem.name,
-            sku: editingItem.sku?.trim() || null,
-            unit_price: editingItem.unit_price,
-            sale_price: editingItem.sale_price,
-            stock_quantity: editingItem.stock_quantity,
-        };
-
-        const { data: updatedItems, error } = await supabase
-            .from('inventory_items')
-            .update(updateData)
-            .eq('id', editingItem.id)
-            .eq('user_id', user.id)
-            .select()
-            .single();
-
-        if (error) {
-            console.error('Error al actualizar el artículo:', error);
-            alert(`Error al actualizar: ${error.message}`);
-        } else {
-            setItems(prevItems => prevItems.map(item =>
-                item.id === editingItem.id ? (updatedItems as InventoryItem) : item
-            ));
-            cancelEditing();
-        }
-
-        setLoading(false);
+    const handleDelete = async (id: string) => {
+        if (!confirm('¿Eliminar este producto permanentemente?')) return;
+        await supabase.from('inventory_items').delete().eq('id', id);
+        loadData();
     };
 
-    // **FUNCIÓN: ELIMINAR ARTÍCULO**
-    const handleDeleteItem = async (itemId: string, itemName: string) => {
-        if (!user) return;
-        if (!window.confirm(`¿Estás seguro de que quieres eliminar el artículo "${itemName}"? Esta acción es irreversible.`)) {
-            return;
-        }
-
-        setLoading(true);
-
-        const { error } = await supabase
-            .from('inventory_items')
-            .delete()
-            .eq('id', itemId)
-            .eq('user_id', user.id);
-
-        if (error) {
-            console.error('Error al eliminar el artículo:', error);
-            alert(`Error al eliminar: ${error.message}`);
-        } else {
-            setItems(prevItems => prevItems.filter(item => item.id !== itemId));
-        }
-
-        setLoading(false);
-    };
-
-
-    if (!user) {
-        return <p className="text-red-500">Inicia sesión para acceder al módulo de Inventario.</p>;
-    }
-
-
+    // --------------------------------------------------
+    // 🎨 RENDERIZADO
+    // --------------------------------------------------
     return (
-        <div className="space-y-8">
-            <h2 className="text-3xl font-bold text-slate-800 flex items-center gap-2">
-                <Package className="w-7 h-7" /> Módulo de Inventario
-            </h2>
-            
-            <hr />
-            
-            {/* 📊 RESUMEN DE INVENTARIO Y VENTAS */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                <div className="bg-white border border-red-300 rounded-lg p-5 shadow-sm">
-                    <p className="text-sm font-semibold text-red-600">Inversión Total en Stock</p>
-                    <p className="text-2xl font-bold text-red-800">
-                        ${inventorySummary.totalInvestment.toFixed(2)}
-                    </p>
-                    <p className="text-xs text-slate-500 mt-1">
-                        ({items.length} artículos)
-                    </p>
-                </div>
-
-                <div className="bg-white border border-green-300 rounded-lg p-5 shadow-sm">
-                    <p className="text-sm font-semibold text-green-600">Ganancia Potencial (Stock)</p>
-                    <p className="text-2xl font-bold text-green-800">
-                        ${totalPotentialProfit.toFixed(2)}
-                    </p>
-                    <p className="text-xs text-slate-500 mt-1">
-                        (Venta Potencial - Inversión)
-                    </p>
-                </div>
-                
-                <div className="bg-white border border-blue-300 rounded-lg p-5 shadow-sm">
-                    <p className="text-sm font-semibold text-blue-600 flex items-center gap-1">
-                        <DollarSign className="w-4 h-4" /> Dinero Recogido
-                    </p>
-                    <p className="text-2xl font-bold text-blue-800">
-                        ${salesSummary.totalCollected.toFixed(2)}
-                    </p>
-                    <p className="text-xs text-slate-500 mt-1">
-                        (Ventas ya pagadas)
-                    </p>
-                </div>
-
-                <div className="bg-white border border-yellow-300 rounded-lg p-5 shadow-sm">
-                    <p className="text-sm font-semibold text-yellow-600 flex items-center gap-1">
-                        <TrendingUp className="w-4 h-4" /> Dinero Por Recoger
-                    </p>
-                    <p className="text-2xl font-bold text-yellow-800">
-                        ${salesSummary.totalPending.toFixed(2)}
-                    </p>
-                    <p className="text-xs text-slate-500 mt-1">
-                        (Ventas pendientes de pago)
-                    </p>
-                </div>
+        <div className="space-y-6 p-6 bg-slate-50 min-h-screen">
+            {/* Cabecera */}
+            <div className="flex justify-between items-center">
+                <h2 className="text-2xl font-black text-slate-800 flex items-center gap-2">
+                    <Package className="text-blue-600" /> INVENTARIO PRO
+                </h2>
             </div>
 
-            <hr />
-            
-            {/* ➕ SECCIÓN: AGREGAR NUEVO ARTÍCULO */}
-            <div className="bg-white border border-green-200 rounded-lg p-6 shadow-lg">
-                <h3 className="text-xl font-semibold text-green-700 mb-4 flex items-center gap-2">
-                    <Plus className="w-5 h-5" /> Agregar Nuevo Artículo
-                </h3>
-                <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-                    <div>
-                        <label className="block text-sm font-medium text-slate-700">Nombre</label>
-                        <input 
-                            type="text"
-                            value={newItemName}
-                            onChange={(e) => setNewItemName(e.target.value)}
-                            className="mt-1 w-full px-3 py-2 border rounded-md"
-                            placeholder="Ingrese un Nombre"
-                            disabled={loading}
-                        />
-                    </div>
-                    <div>
-                        <label className="block text-sm font-medium text-slate-700">Costo de Compra</label>
-                        <input 
-                            type="number"
-                            step="0.01"
-                            value={newItemPurchasePrice === 0 && !String(newItemPurchasePrice).includes('.') ? '' : newItemPurchasePrice}
-                            onChange={(e) => setNewItemPurchasePrice(parseFloat(e.target.value) || 0)}
-                            className="mt-1 w-full px-3 py-2 border rounded-md"
-                            placeholder="Ingrese un Monto"
-                            disabled={loading}
-                        />
-                    </div>
-                    <div>
-                        <label className="block text-sm font-medium text-slate-700">Precio de Venta</label>
-                        <input 
-                            type="number"
-                            step="0.01"
-                            value={newItemSalePrice === 0 && !String(newItemSalePrice).includes('.') ? '' : newItemSalePrice}
-                            onChange={(e) => setNewItemSalePrice(parseFloat(e.target.value) || 0)}
-                            className="mt-1 w-full px-3 py-2 border rounded-md"
-                            placeholder="Ingrese un Monto"
-                            disabled={loading}
-                        />
-                    </div>
-                    <div>
-                        <label className="block text-sm font-medium text-slate-700">Stock</label>
-                        <input 
-                            type="number"
-                            value={newItemQuantity === 0 ? '' : newItemQuantity}
-                            onChange={(e) => {
-                                const value = parseInt(e.target.value);
-                                setNewItemQuantity(isNaN(value) ? 0 : value);
-                            }}
-                            className="mt-1 w-full px-3 py-2 border rounded-md"
-                            placeholder="Ingrese el numero de stock"
-                            disabled={loading}
-                        />
-                    </div>
-                    <div>
-                        <label className="block text-sm font-medium text-slate-700">SKU</label>
-                        <input 
-                            type="text"
-                            value={newItemSku}
-                            onChange={(e) => setNewItemSku(e.target.value)}
-                            className="mt-1 w-full px-3 py-2 border rounded-md"
-                            placeholder="Ingrese un codigo unico"
-                            disabled={loading}
-                        />
-                    </div>
-                </div>
-                <button 
-                    onClick={handleAddItem}
-                    disabled={loading || !newItemName.trim() || newItemQuantity <= 0 || newItemPurchasePrice <= 0 || newItemSalePrice <= 0}
-                    className="mt-6 w-full md:w-auto px-6 py-2 bg-green-600 text-white font-semibold rounded-md hover:bg-green-700 disabled:bg-slate-400 transition"
-                >
-                    {loading ? 'Procesando...' : 'Guardar Artículo'}
-                </button>
+            {/* KPIs */}
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <StatCard title="Inversión Stock" value={stats.cost} color="blue" />
+                <StatCard title="Ganancia Estimada" value={stats.profit} color="green" />
+                <StatCard title="Caja (Cobrado)" value={stats.collected} color="slate" />
+                <StatCard title="Cuentas por Cobrar" value={stats.pending} color="orange" />
             </div>
 
-            <hr />
-
-            {/* 📋 SECCIÓN: LISTADO DE INVENTARIO */}
-            <div className="bg-white border border-slate-200 rounded-lg p-6 shadow-lg">
-                <h3 className="text-xl font-semibold text-slate-700 mb-4">
-                    Artículos en Stock ({filteredItems.length} {searchTerm && `de ${items.length} total`})
-                </h3>
-                
-                {/* 🔎 CAMPO DE BÚSQUEDA */}
-                <div className="relative mb-6">
-                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-slate-400" />
-                    <input
-                        type="text"
-                        placeholder="Buscar por Nombre o Código SKU..."
-                        value={searchTerm}
-                        onChange={(e) => setSearchTerm(e.target.value)}
-                        className="w-full pl-10 pr-4 py-2 border border-slate-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
+            {/* Panel de Venta Rápida */}
+            <div className="bg-slate-900 rounded-2xl p-6 text-white shadow-xl">
+                <div className="flex items-center gap-2 mb-4 text-blue-400">
+                    <ShoppingCart size={20} />
+                    <h3 className="font-bold uppercase tracking-wider">Venta Directa</h3>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <select 
+                        className="bg-slate-800 border-none rounded-lg p-3 text-white focus:ring-2 focus:ring-blue-500"
+                        value={selectedItemId}
+                        onChange={(e) => setSelectedItemId(e.target.value)}
+                    >
+                        <option value="">Seleccionar producto...</option>
+                        {items.map(i => (
+                            <option key={i.id} value={i.id} disabled={i.stock_quantity <= 0}>
+                                {i.name} ({i.stock_quantity} disp.) - ${i.sale_price}
+                            </option>
+                        ))}
+                    </select>
+                    <input 
+                        type="number" 
+                        placeholder="Cantidad"
+                        className="bg-slate-800 border-none rounded-lg p-3 text-white"
+                        value={saleQuantity}
+                        onChange={(e) => setSaleQuantity(parseInt(e.target.value) || 1)}
                     />
+                    <button 
+                        onClick={handleQuickSale}
+                        disabled={isProcessingSale || !selectedItemId}
+                        className="bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 py-3 rounded-lg font-bold transition-all"
+                    >
+                        {isProcessingSale ? 'Registrando...' : 'PROCESAR VENTA'}
+                    </button>
                 </div>
-                
-                {loading && <p className="text-blue-500">Cargando inventario...</p>}
-                
-                {!loading && items.length === 0 && (
-                    <p className="text-slate-500 italic">No hay artículos en tu inventario. ¡Agrega uno!</p>
-                )}
-                
-                {!loading && items.length > 0 && filteredItems.length === 0 && searchTerm && (
-                    <p className="text-red-500 italic">No se encontraron resultados para "{searchTerm}".</p>
-                )}
-
-                {/* NOTA: La tabla usa filteredItems */}
-                {!loading && filteredItems.length > 0 && (
-                    <div className="overflow-x-auto">
-                        <table className="min-w-full text-sm divide-y divide-slate-200">
-                            <thead className="bg-slate-50">
-                                <tr>
-                                    <th className="px-4 py-3 text-left font-semibold text-slate-700">Artículo (SKU)</th>
-                                    <th className="px-4 py-3 text-right font-semibold text-slate-700">Stock</th>
-                                    <th className="px-4 py-3 text-right font-semibold text-slate-700">Costo (Compra)</th>
-                                    <th className="px-4 py-3 text-right font-semibold text-slate-700">Precio (Venta)</th>
-                                    <th className="px-4 py-3 text-right font-semibold text-slate-700">Ganancia Unit.</th>
-                                    <th className="px-4 py-3 text-right font-semibold text-slate-700">Valor Stock (Venta)</th>
-                                    <th className="px-4 py-3 text-center font-semibold text-slate-700">Acciones</th>
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-200">
-                                {filteredItems.map((item) => {
-                                    const purchasePrice = parseFloat(item.unit_price.toString());
-                                    const salePrice = parseFloat(item.sale_price.toString());
-                                    const unitProfit = salePrice - purchasePrice;
-                                    const totalSaleValue = item.stock_quantity * salePrice;
-
-                                    return (
-                                        <tr key={item.id} className="hover:bg-slate-50">
-                                            <td className="px-4 py-3 font-medium text-slate-800">
-                                                {item.name}
-                                                {item.sku && <span className="text-xs text-slate-500 block">({item.sku})</span>}
-                                            </td>
-                                            <td className="px-4 py-3 text-right font-bold text-slate-800">
-                                                {item.stock_quantity}
-                                            </td>
-                                            <td className="px-4 py-3 text-right text-red-700">
-                                                ${purchasePrice.toFixed(2)}
-                                            </td>
-                                            <td className="px-4 py-3 text-right text-green-700">
-                                                ${salePrice.toFixed(2)}
-                                            </td>
-                                            <td className="px-4 py-3 text-right font-semibold text-slate-700">
-                                                ${unitProfit.toFixed(2)}
-                                            </td>
-                                            <td className="px-4 py-3 text-right font-bold text-blue-700">
-                                                ${totalSaleValue.toFixed(2)}
-                                            </td>
-                                            <td className="px-4 py-3 text-center space-x-2">
-                                                <button
-                                                    onClick={() => startEditing(item)}
-                                                    disabled={loading}
-                                                    className="p-1.5 bg-yellow-100 text-yellow-700 rounded-full hover:bg-yellow-200 disabled:opacity-50"
-                                                    title="Editar detalles"
-                                                >
-                                                    <Edit3 className="w-4 h-4" />
-                                                </button>
-                                                <button
-                                                    onClick={() => handleDeleteItem(item.id, item.name)}
-                                                    disabled={loading}
-                                                    className="p-1.5 bg-red-100 text-red-700 rounded-full hover:bg-red-200 disabled:opacity-50"
-                                                    title="Eliminar producto"
-                                                >
-                                                    <Trash2 className="w-4 h-4" />
-                                                </button>
-                                            </td>
-                                        </tr>
-                                    );
-                                })}
-                            </tbody>
-                        </table>
-                    </div>
-                )}
             </div>
 
-            {/* 📝 MODAL/FORMULARIO DE EDICIÓN */}
-            {editingItem && (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-                    <div className="bg-white rounded-lg p-6 shadow-2xl w-full max-w-lg">
-                        <h3 className="text-2xl font-bold text-slate-800 mb-4">
-                            Editando: {editingItem.name}
-                        </h3>
-                        
-                        <div className="space-y-4">
-                            <div>
-                                <label className="block text-sm font-medium text-slate-700">Nombre del Artículo *</label>
-                                <input 
-                                    type="text"
-                                    value={editingItem.name}
-                                    onChange={(e) => handleEditChange('name', e.target.value)}
-                                    className="mt-1 w-full px-3 py-2 border rounded-md"
-                                    placeholder="Nombre del producto"
-                                />
-                            </div>
-                            <div>
-                                <label className="block text-sm font-medium text-slate-700">SKU</label>
-                                <input 
-                                    type="text"
-                                    value={editingItem.sku || ''}
-                                    onChange={(e) => handleEditChange('sku', e.target.value)}
-                                    className="mt-1 w-full px-3 py-2 border rounded-md"
-                                    placeholder="Código interno (Ej: TLC-RJA-100)"
-                                />
-                            </div>
+            {/* Formulario de Entrada */}
+            <div className="bg-white rounded-xl p-6 shadow-sm border border-slate-200">
+                <h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2">
+                    <Plus className="text-green-500" size={18} /> Registrar Nueva Mercancía
+                </h3>
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+                    <input type="text" placeholder="Nombre" className="input-field" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} />
+                    <input type="text" placeholder="SKU" className="input-field" value={formData.sku} onChange={e => setFormData({...formData, sku: e.target.value})} />
+                    <input type="text" placeholder="Proveedor" className="input-field" value={formData.supplier} onChange={e => setFormData({...formData, supplier: e.target.value})} />
+                    <input type="number" placeholder="Stock" className="input-field" value={formData.stock_quantity || ''} onChange={e => setFormData({...formData, stock_quantity: parseInt(e.target.value)})} />
+                    <input type="number" placeholder="Costo" className="input-field" value={formData.unit_price || ''} onChange={e => setFormData({...formData, unit_price: parseFloat(e.target.value)})} />
+                    <input type="number" placeholder="P. Venta" className="input-field" value={formData.sale_price || ''} onChange={e => setFormData({...formData, sale_price: parseFloat(e.target.value)})} />
+                </div>
+                <button onClick={handleAddItem} className="mt-4 bg-slate-800 text-white px-6 py-2 rounded-lg font-semibold hover:bg-slate-700">Añadir al Sistema</button>
+            </div>
 
-                            <div className="grid grid-cols-2 gap-4">
-                                <div>
-                                    <label className="block text-sm font-medium text-slate-700">Costo de Compra *</label>
-                                    <input 
-                                        type="number"
-                                        step="0.01"
-                                        value={editingItem.unit_price}
-                                        onChange={(e) => handleEditChange('unit_price', e.target.value)}
-                                        className="mt-1 w-full px-3 py-2 border rounded-md"
-                                        placeholder="Costo de inversión"
-                                    />
-                                </div>
-                                <div>
-                                    <label className="block text-sm font-medium text-slate-700">Precio de Venta *</label>
-                                    <input 
-                                        type="number"
-                                        step="0.01"
-                                        value={editingItem.sale_price}
-                                        onChange={(e) => handleEditChange('sale_price', e.target.value)}
-                                        className="mt-1 w-full px-3 py-2 border rounded-md"
-                                        placeholder="Precio al cliente"
-                                    />
-                                </div>
-                            </div>
-                            
-                            <div>
-                                <label className="block text-sm font-medium text-slate-700">Cantidad en Stock *</label>
-                                <input 
-                                    type="number"
-                                    value={editingItem.stock_quantity}
-                                    onChange={(e) => handleEditChange('stock_quantity', e.target.value)}
-                                    className="mt-1 w-full px-3 py-2 border rounded-md"
-                                    placeholder="Cantidad actual"
-                                />
-                            </div>
-                        </div>
-
-                        <div className="mt-6 flex justify-end gap-3">
-                            <button 
-                                onClick={cancelEditing}
-                                className="px-4 py-2 bg-slate-200 text-slate-700 font-semibold rounded-md hover:bg-slate-300 transition flex items-center gap-1"
-                                disabled={loading}
-                            >
-                                <XCircle className="w-5 h-5" /> Cancelar
-                            </button>
-                            <button 
-                                onClick={handleUpdateItem}
-                                className="px-4 py-2 bg-blue-600 text-white font-semibold rounded-md hover:bg-blue-700 transition flex items-center gap-1"
-                                disabled={loading || !editingItem.name.trim() || editingItem.unit_price < 0 || editingItem.sale_price < 0 || editingItem.stock_quantity < 0}
-                            >
-                                <CheckCircle className="w-5 h-5" /> {loading ? 'Guardando...' : 'Guardar Cambios'}
-                            </button>
-                        </div>
+            {/* Tabla de Inventario */}
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                <div className="p-4 border-b flex items-center justify-between bg-slate-50">
+                    <span className="font-bold text-slate-600">Stock Actual</span>
+                    <div className="relative w-64">
+                        <Search className="absolute left-3 top-2.5 text-slate-400" size={16} />
+                        <input 
+                            type="text" placeholder="Buscar..." 
+                            className="pl-10 pr-4 py-2 border rounded-full text-sm w-full focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            value={searchTerm}
+                            onChange={e => setSearchTerm(e.target.value)}
+                        />
                     </div>
                 </div>
-            )}
+                <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm">
+                        <thead className="bg-slate-50 text-slate-500">
+                            <tr>
+                                <th className="p-4">Producto</th>
+                                <th className="p-4">Proveedor</th>
+                                <th className="p-4 text-center">Stock</th>
+                                <th className="p-4">Inversión</th>
+                                <th className="p-4">Precio Venta</th>
+                                <th className="p-4">Acciones</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y">
+                            {filteredItems.map(item => (
+                                <tr key={item.id} className="hover:bg-blue-50/30 transition-colors">
+                                    <td className="p-4">
+                                        <div className="font-bold text-slate-800">{item.name}</div>
+                                        <div className="text-xs text-slate-400">SKU: {item.sku || 'N/A'}</div>
+                                    </td>
+                                    <td className="p-4">
+                                        <div className="flex items-center gap-1 text-slate-600">
+                                            <Truck size={14} /> {item.supplier || 'Genérico'}
+                                        </div>
+                                    </td>
+                                    <td className="p-4 text-center">
+                                        <span className={`px-3 py-1 rounded-full font-bold ${item.stock_quantity < 5 ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'}`}>
+                                            {item.stock_quantity}
+                                        </span>
+                                    </td>
+                                    <td className="p-4 text-slate-500">${item.unit_price.toFixed(2)}</td>
+                                    <td className="p-4 font-bold text-blue-600">${item.sale_price.toFixed(2)}</td>
+                                    <td className="p-4">
+                                        <div className="flex gap-2">
+                                            <button onClick={() => setEditingItem(item)} className="p-2 hover:bg-yellow-100 text-yellow-600 rounded-lg"><Edit3 size={16} /></button>
+                                            <button onClick={() => handleDelete(item.id)} className="p-2 hover:bg-red-100 text-red-600 rounded-lg"><Trash2 size={16} /></button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            
+            {/* CSS inline para simplificar */}
+            <style>{`
+                .input-field { @apply border border-slate-200 p-2 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none; }
+            `}</style>
+        </div>
+    );
+}
 
+function StatCard({ title, value, color }: any) {
+    const variants: any = {
+        blue: "bg-blue-50 border-blue-100 text-blue-700",
+        green: "bg-green-50 border-green-100 text-green-700",
+        slate: "bg-slate-50 border-slate-100 text-slate-700",
+        orange: "bg-orange-50 border-orange-100 text-orange-700",
+    };
+    return (
+        <div className={`p-5 rounded-2xl border shadow-sm ${variants[color]}`}>
+            <p className="text-xs font-bold uppercase opacity-60 tracking-wider">{title}</p>
+            <p className="text-2xl font-black mt-1">${Number(value).toFixed(2)}</p>
         </div>
     );
 }

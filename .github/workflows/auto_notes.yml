@@ -4,7 +4,7 @@ on:
   schedule:
     # Se ejecuta a las 00:00 cada 3 días
     - cron: '0 0 */3 * *'
-  workflow_dispatch: # Esto activa un botón en GitHub para probarlo manualmente
+  workflow_dispatch: # Permite ejecutarlo manualmente con el botón gris
 
 jobs:
   create_note:
@@ -12,12 +12,11 @@ jobs:
     steps:
       - name: Insert Note into Supabase
         run: |
-          curl -X POST "${{ secrets.SUPABASE_URL }}/rest/v1/notes" \
+          curl -v -X POST "${{ secrets.SUPABASE_URL }}/rest/v1/notes" \
           -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
           -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}" \
           -H "Content-Type: application/json" \
-          -H "Prefer: return=minimal" \
           -d '{
             "user_id": "${{ secrets.USER_ID }}",
-            "note_text": "Mantenimiento automático: Base de datos activa."
+            "note_text": "Mantenimiento automático: Base de datos activa y operativa."
           }'

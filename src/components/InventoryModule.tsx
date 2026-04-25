@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { 
     Package, Plus, Edit3, Trash2, DollarSign, 
-    TrendingUp, XCircle, CheckCircle, Search, ShoppingCart, Truck 
+    TrendingUp, XCircle, CheckCircle, Search, ShoppingCart, Truck, X 
 } from 'lucide-react'; 
 
 // --- DEFINICIÓN DE TIPOS ---
@@ -14,7 +14,7 @@ interface InventoryItem {
     name: string;
     sku: string | null;
     supplier: string | null;
-    stock_quantity: number; // Ajustado a tu estructura
+    stock_quantity: number;
     unit_price: number; 
     sale_price: number; 
 }
@@ -43,17 +43,17 @@ export function InventoryModule() {
     // Estados de interfaz (Búsqueda y Venta)
     const [searchTerm, setSearchTerm] = useState('');
     const [selectedItemId, setSelectedItemId] = useState('');
-    const [saleQuantity, setSaleQuantity] = useState(1);
+    const [saleQuantity, setSaleQuantity] = useState<number | ''>(''); 
     const [isProcessingSale, setIsProcessingSale] = useState(false);
 
-    // Estados de Formulario (Nuevo Item)
+    // Estados de Formulario (Nuevo/Editar Item)
     const [formData, setFormData] = useState({
         name: '',
         sku: '',
         supplier: '',
-        stock_quantity: 0,
-        unit_price: 0,
-        sale_price: 0
+        stock_quantity: '' as number | '',
+        unit_price: '' as number | '',
+        sale_price: '' as number | ''
     });
 
     const [editingItem, setEditingItem] = useState<InventoryItem | null>(null);
@@ -65,15 +65,19 @@ export function InventoryModule() {
         if (!user) return;
         setLoading(true);
         
-        const [invRes, orderRes] = await Promise.all([
-            supabase.from('inventory_items').select('*').eq('user_id', user.id).order('name'),
-            supabase.from('orders').select('*, payments(*)').eq('user_id', user.id).order('order_date', { ascending: false })
-        ]);
+        try {
+            const [invRes, orderRes] = await Promise.all([
+                supabase.from('inventory_items').select('*').eq('user_id', user.id).order('name'),
+                supabase.from('orders').select('*, payments(*)').eq('user_id', user.id).order('order_date', { ascending: false })
+            ]);
 
-        if (invRes.data) setItems(invRes.data as InventoryItem[]);
-        if (orderRes.data) setOrders(orderRes.data as OrderWithPayments[]);
-        
-        setLoading(false);
+            if (invRes.data) setItems(invRes.data as InventoryItem[]);
+            if (orderRes.data) setOrders(orderRes.data as OrderWithPayments[]);
+        } catch (error) {
+            console.error("Error cargando datos:", error);
+        } finally {
+            setLoading(false);
+        }
     }, [user]);
 
     useEffect(() => { loadData(); }, [loadData]);
@@ -83,7 +87,9 @@ export function InventoryModule() {
     // --------------------------------------------------
     const handleQuickSale = async () => {
         const item = items.find(i => i.id === selectedItemId);
-        if (!user || !item || saleQuantity <= 0 || saleQuantity > item.stock_quantity) {
+        const quantity = Number(saleQuantity);
+
+        if (!user || !item || isNaN(quantity) || quantity <= 0 || quantity > item.stock_quantity) {
             alert("Verifique la cantidad o el stock disponible.");
             return;
         }
@@ -92,18 +98,87 @@ export function InventoryModule() {
         const { error } = await supabase.rpc('handle_quick_sale', {
             p_user_id: user.id,
             p_item_id: item.id,
-            p_quantity: saleQuantity,
+            p_quantity: quantity,
             p_sale_price: item.sale_price
         });
 
         if (error) {
             alert('Error: ' + error.message);
         } else {
-            await loadData(); // Recarga todo para actualizar KPIs y tablas
+            await loadData();
             setSelectedItemId('');
-            setSaleQuantity(1);
+            setSaleQuantity('');
         }
         setIsProcessingSale(false);
+    };
+
+    // --------------------------------------------------
+    // ✅ ACCIONES CRUD (Añadir / Editar / Eliminar)
+    // --------------------------------------------------
+    const handleSubmit = async () => {
+        if (!user || !formData.name) {
+            alert("El nombre del producto es obligatorio.");
+            return;
+        }
+
+        // Generación automática de SKU si está vacío
+        let finalSku = formData.sku;
+        if (!finalSku && !editingItem) {
+            const nextNumber = items.length + 1;
+            finalSku = `SKU-${nextNumber.toString().padStart(3, '0')}`;
+        }
+
+        const payload = {
+            name: formData.name,
+            sku: finalSku || null,
+            supplier: formData.supplier || null,
+            stock_quantity: Number(formData.stock_quantity) || 0,
+            unit_price: Number(formData.unit_price) || 0,
+            sale_price: Number(formData.sale_price) || 0,
+            user_id: user.id
+        };
+
+        if (editingItem) {
+            const { error } = await supabase
+                .from('inventory_items')
+                .update(payload)
+                .eq('id', editingItem.id);
+
+            if (!error) {
+                setEditingItem(null);
+                setFormData({ name: '', sku: '', supplier: '', stock_quantity: '', unit_price: '', sale_price: '' });
+                loadData();
+            } else {
+                alert("Error al actualizar: " + error.message);
+            }
+        } else {
+            const { error } = await supabase.from('inventory_items').insert([payload]);
+            if (!error) {
+                setFormData({ name: '', sku: '', supplier: '', stock_quantity: '', unit_price: '', sale_price: '' });
+                loadData();
+            } else {
+                alert("Error al insertar: " + error.message);
+            }
+        }
+    };
+
+    const startEdit = (item: InventoryItem) => {
+        setEditingItem(item);
+        setFormData({
+            name: item.name,
+            sku: item.sku || '',
+            supplier: item.supplier || '',
+            stock_quantity: item.stock_quantity,
+            unit_price: item.unit_price,
+            sale_price: item.sale_price
+        });
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    };
+
+    const handleDelete = async (id: string) => {
+        if (!confirm('¿Eliminar este producto permanentemente?')) return;
+        await supabase.from('inventory_items').delete().eq('id', id);
+        loadData();
     };
 
     // --------------------------------------------------
@@ -134,31 +209,8 @@ export function InventoryModule() {
         return { ...inv, ...sales };
     }, [items, orders]);
 
-    // --------------------------------------------------
-    // ✅ ACCIONES CRUD
-    // --------------------------------------------------
-    const handleAddItem = async () => {
-        if (!user || !formData.name) return;
-        const { error } = await supabase.from('inventory_items').insert([{
-            ...formData,
-            user_id: user.id
-        }]);
+    if (loading && items.length === 0) return <div className="p-10 text-center font-bold text-slate-400">CARGANDO INVENTARIO...</div>;
 
-        if (!error) {
-            setFormData({ name: '', sku: '', supplier: '', stock_quantity: 0, unit_price: 0, sale_price: 0 });
-            loadData();
-        }
-    };
-
-    const handleDelete = async (id: string) => {
-        if (!confirm('¿Eliminar este producto permanentemente?')) return;
-        await supabase.from('inventory_items').delete().eq('id', id);
-        loadData();
-    };
-
-    // --------------------------------------------------
-    // 🎨 RENDERIZADO
-    // --------------------------------------------------
     return (
         <div className="space-y-6 p-6 bg-slate-50 min-h-screen">
             {/* Cabecera */}
@@ -184,99 +236,112 @@ export function InventoryModule() {
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <select 
-                        className="bg-slate-800 border-none rounded-lg p-3 text-white focus:ring-2 focus:ring-blue-500"
+                        className="bg-slate-800 border-none rounded-lg p-3 text-white focus:ring-2 focus:ring-blue-500 outline-none"
                         value={selectedItemId}
                         onChange={(e) => setSelectedItemId(e.target.value)}
                     >
                         <option value="">Seleccionar producto...</option>
                         {items.map(i => (
                             <option key={i.id} value={i.id} disabled={i.stock_quantity <= 0}>
-                                {i.name} ({i.stock_quantity} disp.) - ${i.sale_price}
+                                {i.name} ({i.stock_quantity} disp.) - ${i.sale_price.toFixed(2)}
                             </option>
                         ))}
                     </select>
                     <input 
                         type="number" 
-                        placeholder="Cantidad"
-                        className="bg-slate-800 border-none rounded-lg p-3 text-white"
+                        placeholder="Ingrese una cantidad"
+                        className="bg-slate-800 border-none rounded-lg p-3 text-white outline-none focus:ring-2 focus:ring-blue-500"
                         value={saleQuantity}
-                        onChange={(e) => setSaleQuantity(parseInt(e.target.value) || 1)}
+                        onChange={(e) => setSaleQuantity(e.target.value === '' ? '' : parseInt(e.target.value))}
                     />
                     <button 
                         onClick={handleQuickSale}
-                        disabled={isProcessingSale || !selectedItemId}
-                        className="bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 py-3 rounded-lg font-bold transition-all"
+                        disabled={isProcessingSale || !selectedItemId || !saleQuantity}
+                        className="bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 py-3 rounded-lg font-bold transition-all uppercase tracking-tight"
                     >
-                        {isProcessingSale ? 'Registrando...' : 'PROCESAR VENTA'}
+                        {isProcessingSale ? 'Registrando...' : 'Procesar Venta'}
                     </button>
                 </div>
             </div>
 
-            {/* Formulario de Entrada */}
-            <div className="bg-white rounded-xl p-6 shadow-sm border border-slate-200">
-                <h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2">
-                    <Plus className="text-green-500" size={18} /> Registrar Nueva Mercancía
-                </h3>
+            {/* Formulario de Entrada / Edición */}
+            <div className={`rounded-xl p-6 shadow-sm border transition-all ${editingItem ? 'bg-amber-50 border-amber-200' : 'bg-white border-slate-200'}`}>
+                <div className="flex justify-between items-center mb-4">
+                    <h3 className="font-bold text-slate-700 flex items-center gap-2">
+                        {editingItem ? <><Edit3 size={18} className="text-amber-500"/> Editando Producto</> : <><Plus size={18} className="text-green-500"/> Registrar Mercancía</>}
+                    </h3>
+                    {editingItem && (
+                        <button onClick={() => { setEditingItem(null); setFormData({name:'', sku:'', supplier:'', stock_quantity:'', unit_price:'', sale_price:''}) }} className="text-red-500 hover:underline text-xs font-bold flex items-center gap-1">
+                            <X size={14}/> CANCELAR
+                        </button>
+                    )}
+                </div>
                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
                     <input type="text" placeholder="Nombre" className="input-field" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} />
-                    <input type="text" placeholder="SKU" className="input-field" value={formData.sku} onChange={e => setFormData({...formData, sku: e.target.value})} />
+                    <input type="text" placeholder="SKU (Auto)" className="input-field bg-slate-50" value={formData.sku} onChange={e => setFormData({...formData, sku: e.target.value})} />
                     <input type="text" placeholder="Proveedor" className="input-field" value={formData.supplier} onChange={e => setFormData({...formData, supplier: e.target.value})} />
-                    <input type="number" placeholder="Stock" className="input-field" value={formData.stock_quantity || ''} onChange={e => setFormData({...formData, stock_quantity: parseInt(e.target.value)})} />
-                    <input type="number" placeholder="Costo" className="input-field" value={formData.unit_price || ''} onChange={e => setFormData({...formData, unit_price: parseFloat(e.target.value)})} />
-                    <input type="number" placeholder="P. Venta" className="input-field" value={formData.sale_price || ''} onChange={e => setFormData({...formData, sale_price: parseFloat(e.target.value)})} />
+                    <input type="number" placeholder="Ingrese una cantidad" className="input-field" value={formData.stock_quantity} onChange={e => setFormData({...formData, stock_quantity: e.target.value === '' ? '' : parseInt(e.target.value)})} />
+                    <input type="number" step="0.01" placeholder="Costo" className="input-field" value={formData.unit_price} onChange={e => setFormData({...formData, unit_price: e.target.value === '' ? '' : parseFloat(e.target.value)})} />
+                    <input type="number" step="0.01" placeholder="P. Venta" className="input-field" value={formData.sale_price} onChange={e => setFormData({...formData, sale_price: e.target.value === '' ? '' : parseFloat(e.target.value)})} />
                 </div>
-                <button onClick={handleAddItem} className="mt-4 bg-slate-800 text-white px-6 py-2 rounded-lg font-semibold hover:bg-slate-700">Añadir al Sistema</button>
+                <button 
+                    onClick={handleSubmit} 
+                    className={`mt-4 px-6 py-2 rounded-lg font-semibold transition-colors ${editingItem ? 'bg-amber-500 hover:bg-amber-600 text-white' : 'bg-slate-800 hover:bg-slate-700 text-white'}`}
+                >
+                    {editingItem ? 'Guardar Cambios' : 'Añadir al Sistema'}
+                </button>
+                {!editingItem && <p className="text-[10px] text-slate-400 mt-2 italic">* El SKU se genera solo si dejas el campo vacío.</p>}
             </div>
 
             {/* Tabla de Inventario */}
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                <div className="p-4 border-b flex items-center justify-between bg-slate-50">
-                    <span className="font-bold text-slate-600">Stock Actual</span>
-                    <div className="relative w-64">
+                <div className="p-4 border-b flex flex-col sm:flex-row items-center justify-between gap-4 bg-slate-50">
+                    <span className="font-bold text-slate-600 uppercase text-xs tracking-widest">Stock Actual</span>
+                    <div className="relative w-full sm:w-64">
                         <Search className="absolute left-3 top-2.5 text-slate-400" size={16} />
                         <input 
-                            type="text" placeholder="Buscar..." 
-                            className="pl-10 pr-4 py-2 border rounded-full text-sm w-full focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            type="text" placeholder="Buscar producto..." 
+                            className="pl-10 pr-4 py-2 border border-slate-200 rounded-full text-sm w-full focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
                             value={searchTerm}
                             onChange={e => setSearchTerm(e.target.value)}
                         />
                     </div>
                 </div>
-                <div className="overflow-x-auto">
+                <div className="overflow-x-auto scrollbar-thin">
                     <table className="w-full text-left text-sm">
-                        <thead className="bg-slate-50 text-slate-500">
+                        <thead className="bg-slate-50 text-slate-500 uppercase text-[10px] font-black">
                             <tr>
                                 <th className="p-4">Producto</th>
                                 <th className="p-4">Proveedor</th>
                                 <th className="p-4 text-center">Stock</th>
-                                <th className="p-4">Inversión</th>
-                                <th className="p-4">Precio Venta</th>
-                                <th className="p-4">Acciones</th>
+                                <th className="p-4">Costo</th>
+                                <th className="p-4">P. Venta</th>
+                                <th className="p-4 text-center">Acciones</th>
                             </tr>
                         </thead>
-                        <tbody className="divide-y">
+                        <tbody className="divide-y divide-slate-100">
                             {filteredItems.map(item => (
                                 <tr key={item.id} className="hover:bg-blue-50/30 transition-colors">
                                     <td className="p-4">
                                         <div className="font-bold text-slate-800">{item.name}</div>
-                                        <div className="text-xs text-slate-400">SKU: {item.sku || 'N/A'}</div>
+                                        <div className="text-[10px] font-mono text-slate-400 uppercase">{item.sku || 'Sin SKU'}</div>
                                     </td>
                                     <td className="p-4">
-                                        <div className="flex items-center gap-1 text-slate-600">
-                                            <Truck size={14} /> {item.supplier || 'Genérico'}
+                                        <div className="flex items-center gap-1 text-slate-500 text-xs italic">
+                                            <Truck size={12} /> {item.supplier || 'Genérico'}
                                         </div>
                                     </td>
                                     <td className="p-4 text-center">
-                                        <span className={`px-3 py-1 rounded-full font-bold ${item.stock_quantity < 5 ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'}`}>
+                                        <span className={`px-3 py-1 rounded-full font-bold text-xs ${item.stock_quantity < 5 ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'}`}>
                                             {item.stock_quantity}
                                         </span>
                                     </td>
-                                    <td className="p-4 text-slate-500">${item.unit_price.toFixed(2)}</td>
-                                    <td className="p-4 font-bold text-blue-600">${item.sale_price.toFixed(2)}</td>
+                                    <td className="p-4 text-slate-500 font-mono">${item.unit_price.toFixed(2)}</td>
+                                    <td className="p-4 font-bold text-blue-600 font-mono">${item.sale_price.toFixed(2)}</td>
                                     <td className="p-4">
-                                        <div className="flex gap-2">
-                                            <button onClick={() => setEditingItem(item)} className="p-2 hover:bg-yellow-100 text-yellow-600 rounded-lg"><Edit3 size={16} /></button>
-                                            <button onClick={() => handleDelete(item.id)} className="p-2 hover:bg-red-100 text-red-600 rounded-lg"><Trash2 size={16} /></button>
+                                        <div className="flex justify-center gap-2">
+                                            <button onClick={() => startEdit(item)} className="p-2 hover:bg-amber-100 text-amber-600 rounded-lg transition-colors" title="Editar"><Edit3 size={16} /></button>
+                                            <button onClick={() => handleDelete(item.id)} className="p-2 hover:bg-red-100 text-red-600 rounded-lg transition-colors" title="Eliminar"><Trash2 size={16} /></button>
                                         </div>
                                     </td>
                                 </tr>
@@ -286,9 +351,20 @@ export function InventoryModule() {
                 </div>
             </div>
             
-            {/* CSS inline para simplificar */}
             <style>{`
-                .input-field { @apply border border-slate-200 p-2 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none; }
+                .input-field { 
+                    border: 1px solid #e2e8f0; 
+                    padding: 0.5rem 0.75rem; 
+                    border-radius: 0.5rem; 
+                    font-size: 0.875rem; 
+                    outline: none; 
+                    transition: all 0.2s;
+                    background: white;
+                }
+                .input-field:focus {
+                    border-color: #3b82f6;
+                    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+                }
             `}</style>
         </div>
     );
@@ -303,7 +379,7 @@ function StatCard({ title, value, color }: any) {
     };
     return (
         <div className={`p-5 rounded-2xl border shadow-sm ${variants[color]}`}>
-            <p className="text-xs font-bold uppercase opacity-60 tracking-wider">{title}</p>
+            <p className="text-[10px] font-black uppercase opacity-60 tracking-widest">{title}</p>
             <p className="text-2xl font-black mt-1">${Number(value).toFixed(2)}</p>
         </div>
     );

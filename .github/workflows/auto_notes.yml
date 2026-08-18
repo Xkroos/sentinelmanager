@@ -1,0 +1,22 @@
+name: Auto Create Note Every 3 Days
+
+on:
+  schedule:
+    # Se ejecuta a las 00:00 cada 3 días
+    - cron: '0 0 */3 * *'
+  workflow_dispatch: # Permite ejecutarlo manualmente con el botón gris
+
+jobs:
+  create_note:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Insert Note into Supabase
+        run: |
+          curl -v -X POST "${{ secrets.SUPABASE_URL }}/rest/v1/notes" \
+          -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
+          -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "user_id": "${{ secrets.USER_ID }}",
+            "note_text": "Mantenimiento automático: Base de datos activa y operativa."
+          }'

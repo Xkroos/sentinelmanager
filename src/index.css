@@ -1,0 +1,44 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  /* Escala por defecto (16px) para pantallas grandes */
+  html {
+    font-size: 100%;
+  }
+  
+  /* Laptops estándar y pantallas un poco más pequeñas */
+  @media (max-width: 1536px) {
+    html {
+      font-size: 87.5%; /* 14px */
+    }
+  }
+
+  /* Laptops pequeñas y tablets horizontales */
+  @media (max-width: 1280px) {
+    html {
+      font-size: 81.25%; /* 13px */
+    }
+  }
+
+  /* Pantallas más pequeñas (tablets) */
+  @media (max-width: 1024px) {
+    html {
+      font-size: 75%; /* 12px */
+    }
+  }
+
+  /* Si la altura de la pantalla es muy pequeña (ej. barra de tareas grande), también reducimos para que los modales entren */
+  @media (max-height: 850px) and (min-width: 1025px) {
+    html {
+      font-size: 81.25%;
+    }
+  }
+
+  @media (max-height: 720px) and (min-width: 1025px) {
+    html {
+      font-size: 75%;
+    }
+  }
+}
